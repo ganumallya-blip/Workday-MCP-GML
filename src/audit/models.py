@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 class AuditEvent(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    request_id: str | None = None
     event_type: str
     actor_type: str
     actor_id: str

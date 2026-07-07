@@ -34,7 +34,7 @@ async def sessions(admin_user: str = Depends(require_admin)):
 
 @router.post("/sessions/{user_id}/revoke")
 async def revoke_session(user_id: str, admin_user: str = Depends(require_admin)) -> dict[str, str]:
-    await oauth_manager.revoke_token(user_id)
+    await oauth_manager.revoke_user_id(user_id, actor_id=admin_user)
     await audit_logger.log(AuditEvent(event_type="admin", actor_type="admin", actor_id=admin_user, action="admin_revoked_session", target_user_id=user_id, status="success"))
     return {"status": "revoked", "user_id": user_id}
 

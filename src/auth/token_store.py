@@ -53,6 +53,7 @@ class MemoryTokenStore(TokenStore):
         status = "expired" if session.is_expired else "valid"
         return TokenMetadata(
             user_id=session.user_id,
+            email=session.email,
             authenticated=not session.is_expired,
             expires_at=session.expires_at,
             scopes=session.scopes,

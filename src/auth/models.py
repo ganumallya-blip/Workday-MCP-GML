@@ -3,21 +3,13 @@ from datetime import datetime, timezone
 from enum import Enum
 try:
     from pydantic import BaseModel, Field
-except ModuleNotFoundError:  # pragma: no cover - lightweight fallback for minimal test environments
+except ModuleNotFoundError:  # pragma: no cover
     class BaseModel:
         def __init__(self, **data):
-            for name, value in self.__class__.__dict__.items():
-                if name.startswith("_") or callable(value) or isinstance(value, property):
-                    continue
-                if name not in data:
-                    setattr(self, name, value)
             for key, value in data.items():
                 setattr(self, key, value)
-
-    class _FieldInfo:
-        def __init__(self, default=None, default_factory=None):
-            self.default = default_factory() if default_factory else default
-
+        def model_dump(self):
+            return dict(self.__dict__)
     def Field(default=None, default_factory=None):
         return default_factory() if default_factory else default
 
@@ -29,6 +21,7 @@ class AuthStatus(str, Enum):
 
 class TokenSession(BaseModel):
     user_id: str
+    email: str | None = None
     access_token: str
     refresh_token: str | None = None
     expires_at: datetime
@@ -50,11 +43,13 @@ class OAuthState(BaseModel):
     state: str
     user_id: str
     code_verifier: str
+    redirect_after: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: datetime
 
 class TokenMetadata(BaseModel):
     user_id: str
+    email: str | None = None
     authenticated: bool
     expires_at: datetime | None = None
     scopes: list[str] = Field(default_factory=list)

@@ -19,12 +19,12 @@ class AdminAuthService:
 
     async def login(self, username: str, password: str) -> tuple[str, int]:
         if not self._verify(username, password):
-            await audit_logger.log(AuditEvent(event_type="admin", actor_type="admin", actor_id=username, action="admin_login", status="failure"))
+            await audit_logger.log(AuditEvent(event_type="admin", actor_type="admin", actor_id=username, action="admin_login_failure", status="failure"))
             raise AdminAuthenticationFailed("Invalid admin credentials.")
         token = secrets.token_urlsafe(48)
         ttl = self.settings.admin_session_ttl_minutes * 60
         _sessions[token] = (username, datetime.now(timezone.utc) + timedelta(seconds=ttl))
-        await audit_logger.log(AuditEvent(event_type="admin", actor_type="admin", actor_id=username, action="admin_login", status="success"))
+        await audit_logger.log(AuditEvent(event_type="admin", actor_type="admin", actor_id=username, action="admin_login_success", status="success"))
         return token, ttl
 
     def validate(self, token: str) -> str:

@@ -1,50 +1,74 @@
 # Workday MCP Server - Phase 1
 
-Production-oriented foundation for a Workday MCP server that powers an enterprise employee digital assistant.
+Production-oriented foundation for a reusable Workday-backed enterprise integration platform for employee digital assistants. Future clients may include Microsoft Copilot Studio, Microsoft 365 Copilot, ChatGPT, Claude, custom web/mobile assistants, and other MCP-compatible hosts.
 
-Phase 1 intentionally implements only the platform foundation: configuration, OAuth2 Authorization Code with PKCE, token/session abstraction, FastAPI callback handling, one MCP authentication tool, a Workday client scaffold, audit logging, and an admin operations console scaffold.
+Phase 1 intentionally implements only architecture foundation: configuration, Layer 1 identity abstraction, request context resolution, OAuth2 Authorization Code with PKCE, token/session abstraction, FastAPI callback handling, one MCP authentication tool, a Workday client scaffold, audit logging, and an admin operations console scaffold.
 
-## Architecture
+No PTO, leave, approval, worker profile, manager profile, events, or worker-search tools are implemented in Phase 1.
 
-Employees authenticate with their own Workday accounts. Every future Workday request must execute with the requesting employee's access token. This is not an integration-user architecture, and admins cannot impersonate employees.
+## Two Authentication Layers
 
-Core layers:
+This server separates authentication into two independent layers:
 
-- `src/config.py` loads settings from environment variables only.
-- `src/auth/` owns OAuth2, PKCE, token models, token store abstractions, and callback routing.
-- `src/server.py` exposes the FastMCP server.
-- `src/tools/auth_tools.py` contains the single Phase 1 MCP tool: `authenticate_workday`.
-- `src/workday/client.py` provides authenticated `_get` and `_post` scaffolding for Phase 2 business tools.
-- `src/admin/` exposes operations, security, and monitoring APIs.
-- `src/audit/` records safe audit events without secrets or tokens.
+1. **Client / Copilot / MCP Host → MCP Server**: resolves the current assistant user through an `IdentityProvider` and produces a trusted `RequestContext`.
+2. **MCP Server → Workday OAuth**: checks whether that resolved user has a valid Workday token session before calling Workday.
 
-## Project Structure
+Being authenticated to the MCP server never means the user is already authenticated to Workday.
 
-```text
-src/
-  main.py
-  server.py
-  config.py
-  auth/
-  admin/
-  audit/
-  workday/
-  services/
-  tools/
-  utils/
-tests/
-  test_pkce.py
-  test_token_store.py
+## Critical Identity Rule
+
+The MCP server must never trust `user_id` values supplied by an LLM, assistant, or client tool argument. Identity comes only from authenticated request context.
+
+The Phase 1 MCP tool is therefore:
+
+```python
+authenticate_workday()
 ```
+
+It does **not** accept `user_id`. Future tools must follow the same pattern:
+
+```python
+context = await context_resolver.resolve(request)
+await some_service.do_work(context, request_payload)
+```
+
+## Identity Providers
+
+`src/identity/provider.py` defines the `IdentityProvider` interface and implementations:
+
+- `DevIdentityProvider`: local development only.
+- `FutureIdentityProvider`: placeholder for production authentication.
+
+When `APP_ENV=local`, development identity resolves from:
+
+1. `X-Dev-User` header when available.
+2. `DEV_USER_ID` otherwise.
+
+Development identity also supports `DEV_USER_EMAIL` and `DEV_USER_DISPLAY_NAME`. If `APP_ENV` is not `local`, `X-Dev-User` is rejected. Production TODOs include Entra ID JWT validation, Copilot Studio authentication, and generic OAuth/JWT validation.
+
+In stdio/local MCP mode, the MCP SDK may not expose an HTTP request object. In that case, Phase 1 uses `DEV_USER_ID` through `DevIdentityProvider` for local development only.
+
+## Request Context
+
+`RequestContext` contains:
+
+- `request_id`
+- `user: UserIdentity`
+- optional `client_type`
+- optional `correlation_id`
+
+All tool and service flows should receive `RequestContext` rather than raw user IDs.
 
 ## OAuth Flow
 
-1. The assistant calls `authenticate_workday(user_id)`.
-2. If no valid session exists, the MCP tool generates an authorization URL with state and PKCE S256 challenge.
-3. The employee signs in to Workday using their own account.
-4. Workday redirects to `GET /oauth/callback?code=...&state=...`.
-5. The callback validates state, exchanges the authorization code with the PKCE verifier, and stores the token session.
-6. Future requests use `OAuthManager.get_valid_access_token(user_id)`, which returns a valid token or refreshes when possible.
+1. The assistant calls `authenticate_workday()`.
+2. The server resolves the current user from request context or local development identity.
+3. If no valid Workday token session exists, the MCP tool generates an authorization URL with state and PKCE S256 challenge.
+4. OAuth state is stored in an expiring `OAuthStateStore` and bound to the resolved `user_id`.
+5. The employee signs in to Workday using their own account.
+6. Workday redirects to `GET /oauth/callback?code=...&state=...`.
+7. The callback validates state, exchanges the authorization code with the PKCE verifier, and stores the token session for the user bound to state.
+8. Future Workday calls use `OAuthManager.get_valid_access_token(context.user)`, refreshing when possible.
 
 The implementation never logs access tokens, refresh tokens, authorization codes, client secrets, PKCE verifiers, or admin passwords.
 
@@ -53,7 +77,7 @@ The implementation never logs access tokens, refresh tokens, authorization codes
 Phase 1 registers only:
 
 ```python
-authenticate_workday(user_id: str)
+authenticate_workday()
 ```
 
 Authenticated response:
@@ -68,9 +92,7 @@ Authentication-required response:
 {"status": "authentication_required", "authorization_url": "...", "message": "Please sign in to Workday."}
 ```
 
-No PTO, leave, approval, worker, manager, event, or worker-search tools are implemented in Phase 1.
-
-## Admin Console
+## Admin Console Boundaries
 
 The admin API is mounted under `/admin` and is intended only for operations, security, and monitoring.
 
@@ -84,7 +106,9 @@ Available endpoints:
 - `POST /admin/sessions/{user_id}/revoke`
 - `GET /admin/audit/events`
 
-Admins can view health, registered MCP tools, safe config status, safe token metadata, revoke sessions, and view audit events. Admin APIs never return raw access tokens, refresh tokens, authorization codes, client secrets, or passwords. Admins cannot run tools as employees or impersonate users.
+Admins can view health, registered MCP tools, safe config status, safe token metadata, revoke sessions by safe session metadata key, and view audit events.
+
+Admins cannot impersonate users, execute employee tools, run Workday APIs as employees, bypass Workday authorization, or see raw access tokens, refresh tokens, authorization codes, PKCE verifiers, client secrets, or passwords. There is intentionally no "run as user" feature.
 
 Phase 1 uses local session-token admin auth. Set `ADMIN_PASSWORD_HASH` for non-local use. Supplying only `ADMIN_PASSWORD` is accepted only when `APP_ENV=local`. Replace this with Entra ID or enterprise SSO in a future phase.
 
@@ -96,7 +120,16 @@ Copy `.env.example` to `.env` and populate values from your Workday OAuth applic
 cp .env.example .env
 ```
 
-Required variables include Workday authorize/token URLs, client ID, client secret, redirect URI, scopes, token encryption key, and admin session secret. Do not hardcode tenant names, URLs, client identifiers, secrets, scopes, or passwords in code.
+Key development identity values:
+
+```bash
+DEV_AUTH_ENABLED=true
+DEV_USER_ID=local-dev-user
+DEV_USER_EMAIL=local-dev-user@example.com
+DEV_USER_DISPLAY_NAME="Local Dev User"
+```
+
+Required Workday values include authorize/token URLs, client ID, client secret, redirect URI, and scopes. Do not hardcode tenant names, URLs, client identifiers, secrets, scopes, or passwords in code.
 
 ## Install
 
@@ -134,10 +167,10 @@ pytest
 
 Add Workday business tools only after this foundation is validated. Future tools should:
 
-- Require a `user_id` and call `OAuthManager.get_valid_access_token(user_id)`.
+- Accept business payloads only, not user identity arguments.
+- Resolve `RequestContext` through `ContextResolver`.
+- Use `OAuthManager.get_valid_access_token(context.user)`.
 - Use `WorkdayClient` rather than duplicating HTTP logic.
 - Preserve per-employee authorization and never use an integration-user token.
 - Add audit events for security-relevant actions.
 - Avoid exposing raw Workday tokens in logs, admin APIs, or tool responses.
-
-Potential Phase 2 features may include PTO balance, leave requests, approvals, worker profile, manager profile, events, and worker search, but they are intentionally excluded from Phase 1.
